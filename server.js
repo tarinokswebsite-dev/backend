@@ -64,6 +64,7 @@ const productSchema = new mongoose.Schema({
     url: { type: String, required: true },
     publicId: { type: String, required: true },
   }],
+  inStock: { type: Boolean, default: true },
 
   uploadDate: { type: Date, default: Date.now },
 }, { timestamps: true });
@@ -278,6 +279,7 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
       description: { ka: desc_ka.trim(), en: desc_en.trim(), ru: desc_ru.trim() },
       price: parseFloat(price),
       category: category || null,
+      inStock: req.body.inStock === 'false' ? false : true, 
       mainImageUrl,
       mainImagePublicId,
       galleryImages,
@@ -360,6 +362,7 @@ app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res
     if (desc_ru) product.description.ru = desc_ru.trim();
     if (price !== undefined && price !== '') product.price = parseFloat(price);
     if (category !== undefined) product.category = category || null;
+    if (req.body.inStock !== undefined) product.inStock = req.body.inStock === 'false' ? false : true;
 
     // Replace main image if a new one is uploaded
     if (req.files?.mainImage?.[0]) {
