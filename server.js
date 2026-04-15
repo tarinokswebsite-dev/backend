@@ -17,6 +17,13 @@ const safeCloudinaryDestroy = async (publicId, resourceType = 'image') => {
   }
 };
 
+// FIX: Helper to safely parse order — returns 999 if empty, missing, or NaN
+const parseOrder = (value) => {
+  if (value === undefined || value === null || value === '') return 999;
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? 999 : parsed;
+};
+
 // --- CLOUDINARY CONFIGURATION ---
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -65,7 +72,9 @@ const productSchema = new mongoose.Schema({
     url: { type: String, required: true },
     publicId: { type: String, required: true },
   }],
+
   inStock: { type: Boolean, default: true },
+  order: { type: Number, default: 999 },
 
   uploadDate: { type: Date, default: Date.now },
 }, { timestamps: true });
@@ -163,13 +172,13 @@ app.get("/", (req, res) => {
 app.post("/categories", checkDbConnection, async (req, res) => {
   console.log('📁 Category create request');
   try {
-    const { ka, en, ru, order } = req.body; // ✅ order added
+    const { ka, en, ru, order } = req.body;
     if (!ka || !en || !ru) {
       return res.status(400).json({ error: "All 3 language names are required (ka, en, ru)" });
     }
     const newCategory = new Category({
-      name: { ka: ka.trim(), en: en.trim(), ru: ru.trim() }, // ✅ comma fixed
-      order: order !== undefined ? parseInt(order) : 999,    // ✅ order saved
+      name: { ka: ka.trim(), en: en.trim(), ru: ru.trim() },
+      order: parseOrder(order), // FIX: use safe parser
     });
     await newCategory.save();
     console.log(`✅ Category created: ${newCategory._id}`);
@@ -182,7 +191,7 @@ app.post("/categories", checkDbConnection, async (req, res) => {
 
 app.get("/categories", checkDbConnection, async (req, res) => {
   try {
-    const categories = await Category.find().sort({ order: 1, uploadDate: -1 }); // ✅ sort by order
+    const categories = await Category.find().sort({ order: 1, uploadDate: -1 });
     res.json({ categories });
   } catch (error) {
     console.error('❌ Error fetching categories:', error);
@@ -204,13 +213,14 @@ app.get("/categories/:id", checkDbConnection, async (req, res) => {
 app.put("/categories/:id", checkDbConnection, async (req, res) => {
   console.log('📁 Category edit request');
   try {
-    const { ka, en, ru, order } = req.body; // ✅ order added
+    const { ka, en, ru, order } = req.body;
     const category = await Category.findById(req.params.id);
     if (!category) return res.status(404).json({ error: "Category not found" });
     if (ka) category.name.ka = ka.trim();
     if (en) category.name.en = en.trim();
     if (ru) category.name.ru = ru.trim();
-    if (order !== undefined) category.order = parseInt(order); // ✅ order updated
+    // FIX: only update order if a value was actually sent, using safe parser
+    if (order !== undefined) category.order = parseOrder(order);
     await category.save();
     res.json({ message: "Category updated successfully!", category });
   } catch (error) {
@@ -235,7 +245,7 @@ app.delete("/categories/:id", checkDbConnection, async (req, res) => {
 app.post("/products", checkDbConnection, uploadProductImages, async (req, res) => {
   console.log('📦 Product create request');
   try {
-    const { name_ka, name_en, name_ru, desc_ka, desc_en, desc_ru, price, category } = req.body;
+    const { name_ka, name_en, name_ru, desc_ka, desc_en, desc_ru, price, category, order } = req.body;
 
     if (!name_ka || !name_en || !name_ru) {
       return res.status(400).json({ error: "All 3 language names are required (name_ka, name_en, name_ru)" });
@@ -267,6 +277,7 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
       price: parseFloat(price),
       category: category || null,
       inStock: req.body.inStock === 'false' ? false : true,
+      order: parseOrder(order), // FIX: use safe parser
       mainImageUrl,
       mainImagePublicId,
       galleryImages,
@@ -305,7 +316,7 @@ app.get("/products", checkDbConnection, async (req, res) => {
 
     const products = await Product.find(query)
       .populate('category')
-      .sort({ uploadDate: -1 });
+      .sort({ order: 1, uploadDate: -1 });
 
     res.json({ products, total: products.length });
   } catch (error) {
@@ -328,7 +339,7 @@ app.get("/products/:id", checkDbConnection, async (req, res) => {
 app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res) => {
   console.log('📦 Product edit request');
   try {
-    const { name_ka, name_en, name_ru, desc_ka, desc_en, desc_ru, price, category, removeGalleryIds } = req.body;
+    const { name_ka, name_en, name_ru, desc_ka, desc_en, desc_ru, price, category, order, removeGalleryIds } = req.body;
     const product = await Product.findById(req.params.id);
     if (!product) return res.status(404).json({ error: "Product not found" });
 
@@ -341,6 +352,8 @@ app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res
     if (price !== undefined && price !== '') product.price = parseFloat(price);
     if (category !== undefined) product.category = category || null;
     if (req.body.inStock !== undefined) product.inStock = req.body.inStock === 'false' ? false : true;
+    // FIX: only update order if a value was actually sent, using safe parser
+    if (order !== undefined) product.order = parseOrder(order);
 
     if (req.files?.mainImage?.[0]) {
       if (product.mainImagePublicId) await safeCloudinaryDestroy(product.mainImagePublicId);
