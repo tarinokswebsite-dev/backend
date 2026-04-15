@@ -17,7 +17,7 @@ const safeCloudinaryDestroy = async (publicId, resourceType = 'image') => {
   }
 };
 
-// FIX: Helper to safely parse order — returns 999 if empty, missing, or NaN
+// Helper to safely parse order — returns 999 if empty, missing, or NaN
 const parseOrder = (value) => {
   if (value === undefined || value === null || value === '') return 999;
   const parsed = parseInt(value, 10);
@@ -37,18 +37,23 @@ const PORT = process.env.PORT || 5001;
 
 // --- MONGOOSE SCHEMAS ---
 
-// Category schema - supports 3 languages
 const categorySchema = new mongoose.Schema({
   name: {
     ka: { type: String, required: true, trim: true },
     en: { type: String, required: true, trim: true },
     ru: { type: String, required: true, trim: true },
   },
+  description: {
+    ka: { type: String, trim: true, default: '' },
+    en: { type: String, trim: true, default: '' },
+    ru: { type: String, trim: true, default: '' },
+  },
+  imageUrl: { type: String, default: null },
+  imagePublicId: { type: String, default: null },
   order: { type: Number, default: 999 },
   uploadDate: { type: Date, default: Date.now },
 }, { timestamps: true });
 
-// Product schema - 1 main image + optional gallery images
 const productSchema = new mongoose.Schema({
   name: {
     ka: { type: String, required: true, trim: true },
@@ -62,24 +67,17 @@ const productSchema = new mongoose.Schema({
   },
   price: { type: Number, required: true, min: 0 },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: false },
-
-  // Main image (used for product card / thumbnail)
   mainImageUrl: { type: String, required: false },
   mainImagePublicId: { type: String, required: false },
-
-  // Gallery images (optional extra photos, up to 10)
   galleryImages: [{
     url: { type: String, required: true },
     publicId: { type: String, required: true },
   }],
-
   inStock: { type: Boolean, default: true },
   order: { type: Number, default: 999 },
-
   uploadDate: { type: Date, default: Date.now },
 }, { timestamps: true });
 
-// Social links schema
 const socialLinkSchema = new mongoose.Schema({
   whatsapp: { type: String, trim: true, default: '' },
   facebook: { type: String, trim: true, default: '' },
@@ -126,7 +124,7 @@ const checkDbConnection = (req, res, next) => {
   next();
 };
 
-// --- CLOUDINARY MULTER SETUP FOR IMAGES ---
+// --- CLOUDINARY MULTER SETUP ---
 const imageStorage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
@@ -140,22 +138,66 @@ const imageStorage = new CloudinaryStorage({
   }
 });
 
+const categoryImageStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'shop-categories',
+    allowed_formats: ['jpg', 'png', 'jpeg', 'gif', 'webp', 'svg'],
+    public_id: (req, file) => {
+      const timestamp = Date.now();
+      const safeName = file.originalname.replace(/\s+/g, '_').replace(/[^\w.-]/g, '');
+      return `${timestamp}-${safeName.split('.')[0]}`;
+    },
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
 const uploadImage = multer({
   storage: imageStorage,
   limits: { fileSize: 10 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed!'), false);
-    }
-  }
+  fileFilter,
 });
+
+// ✅ Define uploadCategoryImage BEFORE the wrapper
+const uploadCategoryImage = multer({
+  storage: categoryImageStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter,
+}).single('categoryImage');
+
+// ✅ Wrapper catches multer/cloudinary errors and returns a readable response
+const uploadCategoryImageMiddleware = (req, res, next) => {
+  uploadCategoryImage(req, res, (err) => {
+    if (err) {
+      console.error('Multer/Cloudinary error (category):', err);
+      return res.status(500).json({ error: 'Image upload failed', details: err.message });
+    }
+    next();
+  });
+};
 
 const uploadProductImages = uploadImage.fields([
   { name: 'mainImage', maxCount: 1 },
   { name: 'gallery', maxCount: 10 },
 ]);
+
+// ✅ Wrapper for product images too
+const uploadProductImagesMiddleware = (req, res, next) => {
+  uploadProductImages(req, res, (err) => {
+    if (err) {
+      console.error('Multer/Cloudinary error (product):', err);
+      return res.status(500).json({ error: 'Image upload failed', details: err.message });
+    }
+    next();
+  });
+};
 
 // --- ROUTES ---
 
@@ -169,22 +211,41 @@ app.get("/", (req, res) => {
 
 // ========== CATEGORIES ROUTES ==========
 
-app.post("/categories", checkDbConnection, async (req, res) => {
+app.post("/categories", checkDbConnection, uploadCategoryImageMiddleware, async (req, res) => {
   console.log('📁 Category create request');
   try {
-    const { ka, en, ru, order } = req.body;
+    const { ka, en, ru, desc_ka, desc_en, desc_ru, order } = req.body;
+
     if (!ka || !en || !ru) {
+      if (req.file?.filename) await safeCloudinaryDestroy(req.file.filename);
       return res.status(400).json({ error: "All 3 language names are required (ka, en, ru)" });
     }
+
+    let imageUrl = null;
+    let imagePublicId = null;
+    if (req.file) {
+      imageUrl = req.file.path;
+      imagePublicId = req.file.filename;
+    }
+
     const newCategory = new Category({
       name: { ka: ka.trim(), en: en.trim(), ru: ru.trim() },
-      order: parseOrder(order), // FIX: use safe parser
+      description: {
+        ka: desc_ka ? desc_ka.trim() : '',
+        en: desc_en ? desc_en.trim() : '',
+        ru: desc_ru ? desc_ru.trim() : '',
+      },
+      imageUrl,
+      imagePublicId,
+      order: parseOrder(order),
     });
+
     await newCategory.save();
     console.log(`✅ Category created: ${newCategory._id}`);
     res.status(201).json({ message: "Category created successfully!", category: newCategory });
   } catch (error) {
     console.error('❌ Error creating category:', error);
+    if (req.file?.filename) await safeCloudinaryDestroy(req.file.filename);
     res.status(500).json({ error: "Failed to create category", details: error.message });
   }
 });
@@ -210,29 +271,56 @@ app.get("/categories/:id", checkDbConnection, async (req, res) => {
   }
 });
 
-app.put("/categories/:id", checkDbConnection, async (req, res) => {
+app.put("/categories/:id", checkDbConnection, uploadCategoryImageMiddleware, async (req, res) => {
   console.log('📁 Category edit request');
   try {
-    const { ka, en, ru, order } = req.body;
+    const { ka, en, ru, desc_ka, desc_en, desc_ru, order, removeImage } = req.body;
+
     const category = await Category.findById(req.params.id);
-    if (!category) return res.status(404).json({ error: "Category not found" });
+    if (!category) {
+      if (req.file?.filename) await safeCloudinaryDestroy(req.file.filename);
+      return res.status(404).json({ error: "Category not found" });
+    }
+
     if (ka) category.name.ka = ka.trim();
     if (en) category.name.en = en.trim();
     if (ru) category.name.ru = ru.trim();
-    // FIX: only update order if a value was actually sent, using safe parser
+
+    if (desc_ka !== undefined) category.description.ka = desc_ka.trim();
+    if (desc_en !== undefined) category.description.en = desc_en.trim();
+    if (desc_ru !== undefined) category.description.ru = desc_ru.trim();
+
     if (order !== undefined) category.order = parseOrder(order);
+
+    if (removeImage === 'true' && !req.file) {
+      await safeCloudinaryDestroy(category.imagePublicId);
+      category.imageUrl = null;
+      category.imagePublicId = null;
+    }
+
+    if (req.file) {
+      await safeCloudinaryDestroy(category.imagePublicId);
+      category.imageUrl = req.file.path;
+      category.imagePublicId = req.file.filename;
+    }
+
     await category.save();
     res.json({ message: "Category updated successfully!", category });
   } catch (error) {
     console.error('❌ Error updating category:', error);
+    if (req.file?.filename) await safeCloudinaryDestroy(req.file.filename);
     res.status(500).json({ error: "Failed to update category", details: error.message });
   }
 });
 
 app.delete("/categories/:id", checkDbConnection, async (req, res) => {
   try {
-    const category = await Category.findByIdAndDelete(req.params.id);
+    const category = await Category.findById(req.params.id);
     if (!category) return res.status(404).json({ error: "Category not found" });
+
+    if (category.imagePublicId) await safeCloudinaryDestroy(category.imagePublicId);
+
+    await Category.findByIdAndDelete(req.params.id);
     res.json({ message: "Category deleted successfully" });
   } catch (error) {
     console.error('❌ Error deleting category:', error);
@@ -242,7 +330,7 @@ app.delete("/categories/:id", checkDbConnection, async (req, res) => {
 
 // ========== PRODUCTS ROUTES ==========
 
-app.post("/products", checkDbConnection, uploadProductImages, async (req, res) => {
+app.post("/products", checkDbConnection, uploadProductImagesMiddleware, async (req, res) => {
   console.log('📦 Product create request');
   try {
     const { name_ka, name_en, name_ru, desc_ka, desc_en, desc_ru, price, category, order } = req.body;
@@ -277,7 +365,7 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
       price: parseFloat(price),
       category: category || null,
       inStock: req.body.inStock === 'false' ? false : true,
-      order: parseOrder(order), // FIX: use safe parser
+      order: parseOrder(order),
       mainImageUrl,
       mainImagePublicId,
       galleryImages,
@@ -336,7 +424,7 @@ app.get("/products/:id", checkDbConnection, async (req, res) => {
   }
 });
 
-app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res) => {
+app.put("/products/:id", checkDbConnection, uploadProductImagesMiddleware, async (req, res) => {
   console.log('📦 Product edit request');
   try {
     const { name_ka, name_en, name_ru, desc_ka, desc_en, desc_ru, price, category, order, removeGalleryIds } = req.body;
@@ -352,7 +440,6 @@ app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res
     if (price !== undefined && price !== '') product.price = parseFloat(price);
     if (category !== undefined) product.category = category || null;
     if (req.body.inStock !== undefined) product.inStock = req.body.inStock === 'false' ? false : true;
-    // FIX: only update order if a value was actually sent, using safe parser
     if (order !== undefined) product.order = parseOrder(order);
 
     if (req.files?.mainImage?.[0]) {
@@ -469,10 +556,6 @@ mongoose.connect(MONGODB_URI)
       console.log('  Products:        POST/GET/GET:id/PUT/DELETE /products');
       console.log('  Products search: GET /products?search=text&category=id');
       console.log('  Social Links:    GET/PUT /social');
-      console.log('\n📸 Product image fields (multipart/form-data):');
-      console.log('  mainImage              → 1 main image (shown on cards)');
-      console.log('  gallery                → up to 10 extra images (shown in detail view)');
-      console.log('  removeGalleryIds       → JSON array of publicIds to delete on PUT');
     });
   })
   .catch(err => {
