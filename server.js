@@ -37,6 +37,7 @@ const categorySchema = new mongoose.Schema({
     en: { type: String, required: true, trim: true },
     ru: { type: String, required: true, trim: true },
   },
+  order: { type: Number, default: 999 },
   uploadDate: { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -85,15 +86,12 @@ const SocialLink = mongoose.model('SocialLink', socialLinkSchema);
 const app = express();
 
 // --- MIDDLEWARE ---
-// FIX: Cannot use wildcard origin with credentials: true
-// Set your frontend URL in FRONTEND_URL env variable, defaults to localhost:3000
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(',').map(o => o.trim())
   : ['http://localhost:3000'];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -145,9 +143,6 @@ const uploadImage = multer({
   }
 });
 
-// Upload handler:
-//   field "mainImage" → single main image
-//   field "gallery"   → up to 10 gallery images
 const uploadProductImages = uploadImage.fields([
   { name: 'mainImage', maxCount: 1 },
   { name: 'gallery', maxCount: 10 },
@@ -168,12 +163,13 @@ app.get("/", (req, res) => {
 app.post("/categories", checkDbConnection, async (req, res) => {
   console.log('📁 Category create request');
   try {
-    const { ka, en, ru } = req.body;
+    const { ka, en, ru, order } = req.body; // ✅ order added
     if (!ka || !en || !ru) {
       return res.status(400).json({ error: "All 3 language names are required (ka, en, ru)" });
     }
     const newCategory = new Category({
-      name: { ka: ka.trim(), en: en.trim(), ru: ru.trim() }
+      name: { ka: ka.trim(), en: en.trim(), ru: ru.trim() }, // ✅ comma fixed
+      order: order !== undefined ? parseInt(order) : 999,    // ✅ order saved
     });
     await newCategory.save();
     console.log(`✅ Category created: ${newCategory._id}`);
@@ -186,7 +182,7 @@ app.post("/categories", checkDbConnection, async (req, res) => {
 
 app.get("/categories", checkDbConnection, async (req, res) => {
   try {
-    const categories = await Category.find().sort({ uploadDate: -1 });
+    const categories = await Category.find().sort({ order: 1, uploadDate: -1 }); // ✅ sort by order
     res.json({ categories });
   } catch (error) {
     console.error('❌ Error fetching categories:', error);
@@ -208,12 +204,13 @@ app.get("/categories/:id", checkDbConnection, async (req, res) => {
 app.put("/categories/:id", checkDbConnection, async (req, res) => {
   console.log('📁 Category edit request');
   try {
-    const { ka, en, ru } = req.body;
+    const { ka, en, ru, order } = req.body; // ✅ order added
     const category = await Category.findById(req.params.id);
     if (!category) return res.status(404).json({ error: "Category not found" });
     if (ka) category.name.ka = ka.trim();
     if (en) category.name.en = en.trim();
     if (ru) category.name.ru = ru.trim();
+    if (order !== undefined) category.order = parseInt(order); // ✅ order updated
     await category.save();
     res.json({ message: "Category updated successfully!", category });
   } catch (error) {
@@ -235,14 +232,6 @@ app.delete("/categories/:id", checkDbConnection, async (req, res) => {
 
 // ========== PRODUCTS ROUTES ==========
 
-// POST - Create product
-// Form-data fields:
-//   mainImage  (file, optional)   → main thumbnail shown on product cards
-//   gallery    (files, optional)  → up to 10 extra images shown in product detail
-//   name_ka, name_en, name_ru
-//   desc_ka, desc_en, desc_ru
-//   price
-//   category   (ObjectId, optional)
 app.post("/products", checkDbConnection, uploadProductImages, async (req, res) => {
   console.log('📦 Product create request');
   try {
@@ -258,7 +247,6 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
       return res.status(400).json({ error: "Price is required" });
     }
 
-    // Main image
     let mainImageUrl = null;
     let mainImagePublicId = null;
     if (req.files?.mainImage?.[0]) {
@@ -266,7 +254,6 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
       mainImagePublicId = req.files.mainImage[0].filename;
     }
 
-    // Gallery images
     const galleryImages = [];
     if (req.files?.gallery?.length) {
       for (const file of req.files.gallery) {
@@ -279,7 +266,7 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
       description: { ka: desc_ka.trim(), en: desc_en.trim(), ru: desc_ru.trim() },
       price: parseFloat(price),
       category: category || null,
-      inStock: req.body.inStock === 'false' ? false : true, 
+      inStock: req.body.inStock === 'false' ? false : true,
       mainImageUrl,
       mainImagePublicId,
       galleryImages,
@@ -295,10 +282,6 @@ app.post("/products", checkDbConnection, uploadProductImages, async (req, res) =
   }
 });
 
-// GET - All products
-// Query params:
-//   ?search=text   → searches name & description in all 3 languages
-//   ?category=id   → filter by category ID
 app.get("/products", checkDbConnection, async (req, res) => {
   try {
     const { search, category } = req.query;
@@ -331,7 +314,6 @@ app.get("/products", checkDbConnection, async (req, res) => {
   }
 });
 
-// GET - Single product
 app.get("/products/:id", checkDbConnection, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id).populate('category');
@@ -343,10 +325,6 @@ app.get("/products/:id", checkDbConnection, async (req, res) => {
   }
 });
 
-// PUT - Edit product
-// To replace main image:          send new "mainImage" file
-// To add gallery images:          send new "gallery" files (appended to existing)
-// To remove gallery images:       send removeGalleryIds=["publicId1","publicId2"] (JSON array as string)
 app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res) => {
   console.log('📦 Product edit request');
   try {
@@ -364,14 +342,12 @@ app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res
     if (category !== undefined) product.category = category || null;
     if (req.body.inStock !== undefined) product.inStock = req.body.inStock === 'false' ? false : true;
 
-    // Replace main image if a new one is uploaded
     if (req.files?.mainImage?.[0]) {
       if (product.mainImagePublicId) await safeCloudinaryDestroy(product.mainImagePublicId);
       product.mainImageUrl = req.files.mainImage[0].path;
       product.mainImagePublicId = req.files.mainImage[0].filename;
     }
 
-    // FIX: Safely parse removeGalleryIds - invalid JSON would previously crash the handler
     if (removeGalleryIds) {
       let idsToRemove = [];
       try {
@@ -388,7 +364,6 @@ app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res
       );
     }
 
-    // Append new gallery images
     if (req.files?.gallery?.length) {
       for (const file of req.files.gallery) {
         product.galleryImages.push({ url: file.path, publicId: file.filename });
@@ -404,7 +379,6 @@ app.put("/products/:id", checkDbConnection, uploadProductImages, async (req, res
   }
 });
 
-// DELETE - Delete product (removes all images from Cloudinary)
 app.delete("/products/:id", checkDbConnection, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
