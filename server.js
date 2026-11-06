@@ -24,6 +24,14 @@ const parseOrder = (value) => {
   return isNaN(parsed) ? 999 : parsed;
 };
 
+// Helper to safely parse discount percent — returns 0 if empty/invalid, clamps to 0-99
+const parseDiscount = (value) => {
+  if (value === undefined || value === null || value === '') return 0;
+  const parsed = parseFloat(value);
+  if (isNaN(parsed)) return 0;
+  return Math.min(99, Math.max(0, Math.round(parsed)));
+};
+
 // --- CLOUDINARY CONFIGURATION ---
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -51,6 +59,7 @@ const categorySchema = new mongoose.Schema({
   imageUrl: { type: String, default: null },
   imagePublicId: { type: String, default: null },
   order: { type: Number, default: 999 },
+  discountPercent: { type: Number, default: 0, min: 0, max: 99 },
   uploadDate: { type: Date, default: Date.now },
 }, { timestamps: true });
 
@@ -214,7 +223,7 @@ app.get("/", (req, res) => {
 app.post("/categories", checkDbConnection, uploadCategoryImageMiddleware, async (req, res) => {
   console.log('📁 Category create request');
   try {
-    const { ka, en, ru, desc_ka, desc_en, desc_ru, order } = req.body;
+    const { ka, en, ru, desc_ka, desc_en, desc_ru, order, discountPercent } = req.body;
 
     if (!ka || !en || !ru) {
       if (req.file?.filename) await safeCloudinaryDestroy(req.file.filename);
@@ -238,6 +247,7 @@ app.post("/categories", checkDbConnection, uploadCategoryImageMiddleware, async 
       imageUrl,
       imagePublicId,
       order: parseOrder(order),
+      discountPercent: parseDiscount(discountPercent),
     });
 
     await newCategory.save();
@@ -274,7 +284,7 @@ app.get("/categories/:id", checkDbConnection, async (req, res) => {
 app.put("/categories/:id", checkDbConnection, uploadCategoryImageMiddleware, async (req, res) => {
   console.log('📁 Category edit request');
   try {
-    const { ka, en, ru, desc_ka, desc_en, desc_ru, order, removeImage } = req.body;
+    const { ka, en, ru, desc_ka, desc_en, desc_ru, order, removeImage, discountPercent } = req.body;
 
     const category = await Category.findById(req.params.id);
     if (!category) {
@@ -291,6 +301,8 @@ app.put("/categories/:id", checkDbConnection, uploadCategoryImageMiddleware, asy
     if (desc_ru !== undefined) category.description.ru = desc_ru.trim();
 
     if (order !== undefined) category.order = parseOrder(order);
+
+    if (discountPercent !== undefined) category.discountPercent = parseDiscount(discountPercent);
 
     if (removeImage === 'true' && !req.file) {
       await safeCloudinaryDestroy(category.imagePublicId);
